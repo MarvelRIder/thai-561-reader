@@ -86,6 +86,11 @@
   }
   .year-link.primary { background: var(--accent); color: white; border-color: var(--accent); font-weight: 600; }
   .year-link:hover { filter: brightness(0.96); }
+  .year-link-en {
+    font-size: 0.8rem;
+    color: var(--muted);
+    text-decoration: underline;
+  }
   .attach-btn {
     background: none;
     color: var(--muted);
@@ -194,10 +199,13 @@ function renderBest(best) {
   card.className = 'card';
   const rows = best.filings
     .map((f, i) => {
-      const reportUrl = `/api/report?name=${encodeURIComponent(best.name)}&year=${encodeURIComponent(f.year)}`;
+      const base = `name=${encodeURIComponent(best.name)}&year=${encodeURIComponent(f.year)}`;
+      const thUrl = `/api/report?${base}&lang=th`;
+      const enUrl = `/api/report?${base}&lang=en`;
       return `
         <div class="year-row">
-          <a class="year-link ${i === 0 ? 'primary' : ''}" href="${reportUrl}" target="_blank" rel="noopener">เปิดอ่าน 56-1 ปี ${f.year}</a>
+          <a class="year-link ${i === 0 ? 'primary' : ''}" href="${thUrl}" target="_blank" rel="noopener">เปิดอ่าน 56-1 ปี ${f.year} (ไทย)</a>
+          <a class="year-link-en" href="${enUrl}" target="_blank" rel="noopener">English</a>
           <button type="button" class="attach-btn" data-name="${encodeURIComponent(best.name)}" data-year="${f.year}">เอกสารแนบ</button>
           <div class="attach-box" hidden></div>
         </div>`;
@@ -206,7 +214,7 @@ function renderBest(best) {
   card.innerHTML = `
     <div class="company-name">${best.name}</div>
     <div class="meta">พบรายงาน 56-1 ทั้งหมด ${best.filings.length} ปี · ยื่นล่าสุด ${best.filings[0].receiveDate}</div>
-    <div class="hint">กด "เปิดอ่าน" จะเปิด PDF ในแท็บใหม่ด้วยตัวอ่านของเบราว์เซอร์เอง เลื่อน/ซูมได้ตามปกติ</div>
+    <div class="hint">กด "เปิดอ่าน" จะเปิด PDF ฉบับภาษาไทยในแท็บใหม่ด้วยตัวอ่านของเบราว์เซอร์เอง เลื่อน/ซูมได้ตามปกติ (ถ้าไม่มีฉบับไทยจะเปิดฉบับอังกฤษแทนโดยอัตโนมัติ)</div>
     <div class="year-list">${rows}</div>
   `;
   resultsEl.appendChild(card);
@@ -223,13 +231,13 @@ function renderBest(best) {
       const name = decodeURIComponent(btn.dataset.name);
       const year = btn.dataset.year;
       try {
-        const res = await fetch(`/api/report-list?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}`);
+        const res = await fetch(`/api/report-list?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}&lang=th`);
         const data = await res.json();
         if (res.ok && data.entries && data.entries.length) {
           box.innerHTML = data.entries
             .map(
               (e) =>
-                `<a href="/api/report?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}&entry=${encodeURIComponent(e.entryName)}" target="_blank" rel="noopener">${e.entryName}</a>`
+                `<a href="/api/report?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}&lang=${data.lang}&entry=${encodeURIComponent(e.entryName)}" target="_blank" rel="noopener">${e.entryName}</a>`
             )
             .join(' ');
         } else {
