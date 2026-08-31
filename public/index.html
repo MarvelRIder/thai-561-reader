@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>เปิดอ่าน 56-1 One Report</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1a1d23;
+    --muted: #6b7280;
+    --accent: #0f62fe;
+    --accent-dark: #0043ce;
+    --border: #e2e5e9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Segoe UI", "Noto Sans Thai", system-ui, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+  }
+  header {
+    padding: 28px 20px 12px;
+    text-align: center;
+  }
+  header h1 { margin: 0 0 6px; font-size: 1.5rem; }
+  header p { margin: 0; color: var(--muted); font-size: 0.95rem; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 0 16px 60px; }
+  form.search {
+    display: flex;
+    gap: 8px;
+    margin: 20px 0;
+  }
+  input[type="text"] {
+    flex: 1;
+    padding: 12px 14px;
+    font-size: 1rem;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    outline: none;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+  button {
+    padding: 12px 20px;
+    font-size: 1rem;
+    border: none;
+    border-radius: 8px;
+    background: var(--accent);
+    color: white;
+    cursor: pointer;
+  }
+  button:hover { background: var(--accent-dark); }
+  button:disabled { background: #a7b6c9; cursor: default; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 18px 20px;
+    margin-bottom: 14px;
+  }
+  .company-name { font-weight: 600; font-size: 1.1rem; margin-bottom: 4px; }
+  .meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 12px; }
+  .years { display: flex; flex-wrap: wrap; gap: 8px; }
+  .years a {
+    display: inline-block;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: #eef2ff;
+    color: var(--accent-dark);
+    text-decoration: none;
+    font-size: 0.9rem;
+    border: 1px solid #dde3fb;
+  }
+  .years a.primary { background: var(--accent); color: white; border-color: var(--accent); font-weight: 600; }
+  .years a:hover { filter: brightness(0.96); }
+  .alt-list { list-style: none; padding: 0; margin: 0; }
+  .alt-list li {
+    padding: 10px 0;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 10px;
+  }
+  .alt-list li:first-child { border-top: none; }
+  .alt-name { font-size: 0.92rem; }
+  .alt-score { color: var(--muted); font-size: 0.78rem; }
+  .pick-btn {
+    background: #f1f3f5;
+    color: var(--text);
+    border: 1px solid var(--border);
+    padding: 6px 12px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    cursor: pointer;
+  }
+  .status { color: var(--muted); font-size: 0.9rem; margin: 10px 0; min-height: 1.2em; }
+  .error { color: #c0392b; }
+  .hint { color: var(--muted); font-size: 0.82rem; margin-top: -6px; margin-bottom: 8px; }
+  .attachments { margin-top: 10px; font-size: 0.85rem; }
+  .attachments a { color: var(--accent-dark); }
+  #viewer-wrap { display: none; margin-top: 18px; }
+  #viewer-wrap.show { display: block; }
+  #pdf-frame {
+    width: 100%;
+    height: 80vh;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: white;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>📄 เปิดอ่าน 56-1 One Report</h1>
+  <p>พิมพ์ชื่อย่อหุ้นไทย แล้วเปิดอ่านรายงาน 56-1 ได้ทันที ไม่ต้องดาวน์โหลดหรือแตกไฟล์เอง</p>
+</header>
+
+<div class="wrap">
+  <form class="search" id="searchForm">
+    <input type="text" id="symbolInput" placeholder="เช่น PTT, CPALL, AOT, KBANK ..." autocomplete="off" autofocus />
+    <button type="submit" id="searchBtn">ค้นหา</button>
+  </form>
+
+  <div class="status" id="status"></div>
+  <div id="results"></div>
+  <div id="viewer-wrap">
+    <div class="card" style="margin-bottom:8px;">
+      <div class="company-name" id="viewerTitle"></div>
+      <div class="attachments" id="viewerAttachments"></div>
+    </div>
+    <iframe id="pdf-frame"></iframe>
+  </div>
+</div>
+
+<script>
+const form = document.getElementById('searchForm');
+const input = document.getElementById('symbolInput');
+const statusEl = document.getElementById('status');
+const resultsEl = document.getElementById('results');
+const viewerWrap = document.getElementById('viewer-wrap');
+const viewerTitle = document.getElementById('viewerTitle');
+const viewerAttachments = document.getElementById('viewerAttachments');
+const pdfFrame = document.getElementById('pdf-frame');
+const searchBtn = document.getElementById('searchBtn');
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const q = input.value.trim();
+  if (q) runSearch(q);
+});
+
+async function runSearch(q) {
+  resultsEl.innerHTML = '';
+  viewerWrap.classList.remove('show');
+  statusEl.textContent = `กำลังค้นหา "${q}" ...`;
+  statusEl.classList.remove('error');
+  searchBtn.disabled = true;
+  try {
+    const res = await fetch(`/api/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
+
+    if (!data.best) {
+      statusEl.textContent = `ไม่พบข้อมูลบริษัทที่ตรงกับ "${q}"`;
+      statusEl.classList.add('error');
+      return;
+    }
+
+    statusEl.textContent = data.yahoo.length
+      ? `จับคู่กับ: ${data.yahoo.map(y => y.symbol.replace('.BK','') + ' (' + y.longname + ')').join(', ')}`
+      : '';
+
+    renderBest(data.best);
+    if (data.alternates && data.alternates.length) {
+      renderAlternates(data.alternates);
+    }
+  } catch (err) {
+    statusEl.textContent = 'ค้นหาไม่สำเร็จ: ' + err.message;
+    statusEl.classList.add('error');
+  } finally {
+    searchBtn.disabled = false;
+  }
+}
+
+function renderBest(best) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  const years = best.filings
+    .map((f, i) => `<a href="#" class="${i === 0 ? 'primary' : ''}" data-name="${encodeURIComponent(best.name)}" data-year="${f.year}">ปี ${f.year}</a>`)
+    .join('');
+  card.innerHTML = `
+    <div class="company-name">${best.name}</div>
+    <div class="meta">พบรายงาน 56-1 ทั้งหมด ${best.filings.length} ปี · ยื่นล่าสุด ${best.filings[0].receiveDate}</div>
+    <div class="years">${years}</div>
+  `;
+  resultsEl.appendChild(card);
+  card.querySelectorAll('a[data-year]').forEach((a) => {
+    a.addEventListener('click', (e) => {
+      e.preventDefault();
+      openReport(decodeURIComponent(a.dataset.name), a.dataset.year);
+    });
+  });
+}
+
+function renderAlternates(alts) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  const items = alts
+    .map(
+      (a) => `<li>
+        <span class="alt-name">${a.name}<br/><span class="alt-score">คะแนนความตรงกัน ${(a.score * 100).toFixed(0)}%</span></span>
+        <button class="pick-btn" data-name="${encodeURIComponent(a.name)}">ใช้บริษัทนี้แทน</button>
+      </li>`
+    )
+    .join('');
+  card.innerHTML = `<div class="hint">ไม่ใช่บริษัทที่ต้องการ? เลือกจากรายชื่อใกล้เคียง:</div><ul class="alt-list">${items}</ul>`;
+  resultsEl.appendChild(card);
+  card.querySelectorAll('.pick-btn').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const name = decodeURIComponent(btn.dataset.name);
+      const alt = alts.find((a) => a.name === name);
+      resultsEl.innerHTML = '';
+      renderBest(alt);
+    });
+  });
+}
+
+async function openReport(name, year) {
+  viewerWrap.classList.add('show');
+  viewerTitle.textContent = `${name} — 56-1 One Report ปี ${year}`;
+  viewerAttachments.textContent = 'กำลังโหลดเอกสาร...';
+  pdfFrame.removeAttribute('src');
+  viewerWrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  const mainUrl = `/api/report?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}`;
+  pdfFrame.src = mainUrl;
+
+  try {
+    const res = await fetch(`/api/report-list?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}`);
+    const data = await res.json();
+    if (res.ok && data.entries && data.entries.length > 1) {
+      viewerAttachments.innerHTML =
+        'เอกสารแนบทั้งหมด: ' +
+        data.entries
+          .map(
+            (e) =>
+              `<a href="/api/report?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}&entry=${encodeURIComponent(e.entryName)}" target="_blank">${e.entryName}</a>`
+          )
+          .join(' · ');
+    } else {
+      viewerAttachments.textContent = '';
+    }
+  } catch (e) {
+    viewerAttachments.textContent = '';
+  }
+}
+</script>
+</body>
+</html>
