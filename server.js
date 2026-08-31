@@ -111,6 +111,22 @@ function thaiDateToGregorian(dateStr) {
   return `${d}/${mo}/${yAD}`;
 }
 
+// The "year" column sometimes carries extra text, e.g.
+// "2569 (กรณีเปลี่ยนธุรกิจ/ผู้ถือหุ้น)" — pull out just the leading number.
+function extractYearNum(yearStr) {
+  const m = String(yearStr).match(/\d{4}/);
+  return m ? Number(m[0]) : null;
+}
+
+// dd/mm/yyyy -> a sortable number (yyyymmdd), for picking the most recent of
+// several same-year filings.
+function dateToComparable(dateStr) {
+  const parts = dateStr.split('/');
+  if (parts.length !== 3) return 0;
+  const [d, mo, y] = parts;
+  return Number(y) * 10000 + Number(mo) * 100 + Number(d);
+}
+
 // The site's active page language seems to live in server-side
 // session/application state rather than being derived purely from the URL:
 // fetching /en/ and /th/ concurrently (or back-to-back) can race and both
@@ -154,18 +170,41 @@ async function loadIndex(force = false) {
   const rowsEn = parseRows(htmlEn);
   const rowsTh = parseRows(htmlTh);
 
-  // Thai rows are keyed by (company code + Gregorian receive date), which
-  // uniquely identifies the same filing across both language listings.
-  const thaiByCodeDate = new Map();
+  // Companies commonly file the Thai and English copies of the same fiscal
+  // year's report on different dates (Thai first, English translation
+  // later), so matching on an exact receive date misses most pairs. Prefer
+  // an exact (code + Gregorian receive date) match when it happens to line
+  // up, otherwise fall back to (code + Gregorian fiscal year) — picking the
+  // most recently received Thai filing if a year has more than one (e.g. a
+  // restated report).
+  const dateKeyToZip = new Map();
+  const yearKeyToBest = new Map(); // code|year -> { zipUrl, dateNum }
   for (const r of rowsTh) {
     if (!r.code) continue;
-    const key = `${r.code}|${thaiDateToGregorian(r.receiveDate)}`;
-    thaiByCodeDate.set(key, r.zipUrl);
+    dateKeyToZip.set(`${r.code}|${thaiDateToGregorian(r.receiveDate)}`, r.zipUrl);
+
+    const yearNum = extractYearNum(r.year);
+    if (yearNum == null) continue;
+    const yearKey = `${r.code}|${yearNum - 543}`;
+    const dateNum = dateToComparable(thaiDateToGregorian(r.receiveDate));
+    const existing = yearKeyToBest.get(yearKey);
+    if (!existing || dateNum > existing.dateNum) {
+      yearKeyToBest.set(yearKey, { zipUrl: r.zipUrl, dateNum });
+    }
   }
 
   const rows = rowsEn.map((r) => {
-    const key = r.code ? `${r.code}|${r.receiveDate}` : null;
-    const zipUrlTh = key ? thaiByCodeDate.get(key) || null : null;
+    let zipUrlTh = null;
+    if (r.code) {
+      zipUrlTh = dateKeyToZip.get(`${r.code}|${r.receiveDate}`) || null;
+      if (!zipUrlTh) {
+        const yearNum = extractYearNum(r.year);
+        if (yearNum != null) {
+          const byYear = yearKeyToBest.get(`${r.code}|${yearNum}`);
+          if (byYear) zipUrlTh = byYear.zipUrl;
+        }
+      }
+    }
     return {
       name: r.name,
       year: r.year,
