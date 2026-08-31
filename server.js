@@ -94,7 +94,7 @@ function parseRows(html) {
     const receiveDate = decodeEntities(m[3]);
     const zipUrl = decodeEntities(m[4]);
     if (!name || !zipUrl) continue;
-    const codeMatch = zipUrl.match(/\/f56\/(\d+)/i);
+    const codeMatch = zipUrl.match(/\/f56\/F?(\d+)/i);
     rows.push({ name, year, receiveDate, zipUrl, code: codeMatch ? codeMatch[1] : null });
   }
   return rows;
@@ -171,48 +171,64 @@ async function loadIndex(force = false) {
   const rowsTh = parseRows(htmlTh);
 
   // Companies commonly file the Thai and English copies of the same fiscal
-  // year's report on different dates (Thai first, English translation
-  // later), so matching on an exact receive date misses most pairs. Prefer
-  // an exact (code + Gregorian receive date) match when it happens to line
-  // up, otherwise fall back to (code + Gregorian fiscal year) — picking the
-  // most recently received Thai filing if a year has more than one (e.g. a
-  // restated report).
-  const dateKeyToZip = new Map();
-  const yearKeyToBest = new Map(); // code|year -> { zipUrl, dateNum }
-  for (const r of rowsTh) {
+  // year's report weeks or months apart — Thai first (it's due sooner),
+  // then an English translation later, sometimes not at all yet. So the
+  // two listings can't just be zipped together by row: build them per
+  // (company code, Gregorian fiscal year) and take the union, so a year
+  // that only has a Thai filing so far (e.g. a just-missed EN deadline)
+  // still shows up instead of disappearing entirely.
+  const enByCodeYear = new Map(); // code|year -> { zipUrl, receiveDate }
+  const enNameByCode = new Map(); // code -> most-recently-seen English name
+  for (const r of rowsEn) {
     if (!r.code) continue;
-    dateKeyToZip.set(`${r.code}|${thaiDateToGregorian(r.receiveDate)}`, r.zipUrl);
-
     const yearNum = extractYearNum(r.year);
     if (yearNum == null) continue;
-    const yearKey = `${r.code}|${yearNum - 543}`;
-    const dateNum = dateToComparable(thaiDateToGregorian(r.receiveDate));
-    const existing = yearKeyToBest.get(yearKey);
-    if (!existing || dateNum > existing.dateNum) {
-      yearKeyToBest.set(yearKey, { zipUrl: r.zipUrl, dateNum });
+    enByCodeYear.set(`${r.code}|${yearNum}`, { zipUrl: r.zipUrl, receiveDate: r.receiveDate });
+    const existingName = enNameByCode.get(r.code);
+    if (!existingName || dateToComparable(r.receiveDate) > dateToComparable(existingName.receiveDate)) {
+      enNameByCode.set(r.code, { name: r.name, receiveDate: r.receiveDate });
     }
   }
 
-  const rows = rowsEn.map((r) => {
-    let zipUrlTh = null;
-    if (r.code) {
-      zipUrlTh = dateKeyToZip.get(`${r.code}|${r.receiveDate}`) || null;
-      if (!zipUrlTh) {
-        const yearNum = extractYearNum(r.year);
-        if (yearNum != null) {
-          const byYear = yearKeyToBest.get(`${r.code}|${yearNum}`);
-          if (byYear) zipUrlTh = byYear.zipUrl;
-        }
-      }
+  const dateKeyToZip = new Map(); // code|receiveDate(AD) -> Thai zipUrl, for exact-date matches
+  const thByCodeYear = new Map(); // code|year -> { zipUrl, receiveDate(AD), dateNum }
+  for (const r of rowsTh) {
+    if (!r.code) continue;
+    const receiveDateAD = thaiDateToGregorian(r.receiveDate);
+    dateKeyToZip.set(`${r.code}|${receiveDateAD}`, r.zipUrl);
+
+    const yearNum = extractYearNum(r.year);
+    if (yearNum == null) continue;
+    const key = `${r.code}|${yearNum - 543}`;
+    const dateNum = dateToComparable(receiveDateAD);
+    const existing = thByCodeYear.get(key);
+    if (!existing || dateNum > existing.dateNum) {
+      thByCodeYear.set(key, { zipUrl: r.zipUrl, receiveDate: receiveDateAD, dateNum });
     }
-    return {
-      name: r.name,
-      year: r.year,
-      receiveDate: r.receiveDate,
-      code: r.code,
-      urls: { en: r.zipUrl, th: zipUrlTh },
-    };
-  });
+  }
+
+  const codeYearKeys = new Set([...enByCodeYear.keys(), ...thByCodeYear.keys()]);
+  const rows = [];
+  for (const key of codeYearKeys) {
+    const [code, yearStr] = key.split('|');
+    const name = enNameByCode.get(code)?.name;
+    if (!name) continue; // no known English name for this company — can't be searched for anyway
+
+    const en = enByCodeYear.get(key) || null;
+    const th = en ? dateKeyToZip.get(`${code}|${en.receiveDate}`) : null;
+    const thFallback = thByCodeYear.get(key) || null;
+
+    rows.push({
+      name,
+      year: yearStr,
+      receiveDate: en ? en.receiveDate : thFallback.receiveDate,
+      code,
+      urls: {
+        en: en ? en.zipUrl : null,
+        th: th || (thFallback ? thFallback.zipUrl : null),
+      },
+    });
+  }
 
   const byName = new Map();
   for (const r of rows) {
@@ -281,10 +297,26 @@ function pdfEntriesOf(buf) {
     .map((e) => ({ entryName: e.entryName, size: e.header.size, entry: e }));
 }
 
-function pickPrimaryPdf(entries) {
-  const oneReport = entries.find((e) => /ONEREPORT|56.?1/i.test(e.entryName));
-  if (oneReport) return oneReport;
-  return entries.slice().sort((a, b) => b.size - a.size)[0];
+// Some filings bundle both language PDFs in a single zip (e.g. Land and
+// Houses' Thai submission also contains an "E_ONE_REPORT_..." English copy),
+// and naming isn't fully consistent (underscores, "ONE_REPORT" vs
+// "ONEREPORT"). Score each candidate for the language we actually want.
+function pickPrimaryPdf(entries, lang) {
+  const isOneReport = (name) => /ONE[_\s]*REPORT|56.?1/i.test(name);
+  const pool = entries.filter((e) => isOneReport(e.entryName));
+  const candidates = pool.length ? pool : entries;
+
+  const score = (name) => {
+    const upper = name.toUpperCase();
+    const isEnglish = /^E[_-]/.test(upper) || upper.includes('ENGLISH') || /E\.PDF$/.test(upper);
+    const isThai = /T\.PDF$/.test(upper) && !isEnglish;
+    if (lang === 'en') return isEnglish ? 2 : isThai ? -1 : 0;
+    return isThai ? 2 : isEnglish ? -1 : 0;
+  };
+
+  return candidates
+    .slice()
+    .sort((a, b) => score(b.entryName) - score(a.entryName) || b.size - a.size)[0];
 }
 
 // ---------- routes ----------
@@ -361,22 +393,26 @@ app.get('/api/report', async (req, res) => {
     const filing = filings && filings.find((f) => f.year === year.toString());
     if (!filing) return res.status(404).json({ error: 'ไม่พบรายงานปีดังกล่าว' });
 
-    const { zipUrl, usedLang } = resolveZipUrl(filing, lang);
+    const wantedLang = lang === 'en' ? 'en' : 'th';
+    const { zipUrl } = resolveZipUrl(filing, lang);
     if (!zipUrl) return res.status(404).json({ error: 'ไม่พบไฟล์เอกสารสำหรับรายงานนี้' });
 
     const buf = await getZipBuffer(zipUrl);
     const pdfEntries = pdfEntriesOf(buf);
     if (!pdfEntries.length) return res.status(500).json({ error: 'ไม่พบไฟล์ PDF ในเอกสารที่ยื่น' });
 
+    // Pick by the language the caller actually asked for (not just which zip
+    // we ended up fetching) — some Thai submissions bundle an English PDF
+    // too, so even a fallback-fetched zip may contain what was asked for.
     const chosen = entry
-      ? pdfEntries.find((e) => e.entryName === entry) || pickPrimaryPdf(pdfEntries)
-      : pickPrimaryPdf(pdfEntries);
+      ? pdfEntries.find((e) => e.entryName === entry) || pickPrimaryPdf(pdfEntries, wantedLang)
+      : pickPrimaryPdf(pdfEntries, wantedLang);
 
     const pdfBuf = chosen.entry.getData();
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
       'Content-Disposition',
-      `inline; filename="${encodeURIComponent(name + '_' + year + '_' + usedLang + '.pdf')}"`,
+      `inline; filename="${encodeURIComponent(name + '_' + year + '_' + wantedLang + '.pdf')}"`,
     );
     res.setHeader('Cache-Control', 'private, max-age=1800');
     res.send(pdfBuf);
