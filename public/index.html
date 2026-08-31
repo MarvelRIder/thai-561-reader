@@ -61,20 +61,47 @@
     margin-bottom: 14px;
   }
   .company-name { font-weight: 600; font-size: 1.1rem; margin-bottom: 4px; }
-  .meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 12px; }
-  .years { display: flex; flex-wrap: wrap; gap: 8px; }
-  .years a {
+  .meta { color: var(--muted); font-size: 0.85rem; margin-bottom: 10px; }
+  .hint { color: var(--muted); font-size: 0.82rem; margin-bottom: 10px; }
+  .year-list { display: flex; flex-direction: column; gap: 6px; }
+  .year-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 10px;
+    padding: 6px 0;
+    border-top: 1px solid var(--border);
+  }
+  .year-row:first-child { border-top: none; }
+  .year-link {
     display: inline-block;
-    padding: 8px 14px;
+    padding: 9px 16px;
     border-radius: 999px;
     background: #eef2ff;
     color: var(--accent-dark);
     text-decoration: none;
     font-size: 0.9rem;
     border: 1px solid #dde3fb;
+    font-weight: 500;
   }
-  .years a.primary { background: var(--accent); color: white; border-color: var(--accent); font-weight: 600; }
-  .years a:hover { filter: brightness(0.96); }
+  .year-link.primary { background: var(--accent); color: white; border-color: var(--accent); font-weight: 600; }
+  .year-link:hover { filter: brightness(0.96); }
+  .attach-btn {
+    background: none;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 0.8rem;
+    cursor: pointer;
+  }
+  .attach-btn:hover { background: #f1f3f5; }
+  .attach-box {
+    flex-basis: 100%;
+    font-size: 0.82rem;
+    color: var(--muted);
+  }
+  .attach-box a { color: var(--accent-dark); margin-right: 4px; }
   .alt-list { list-style: none; padding: 0; margin: 0; }
   .alt-list li {
     padding: 10px 0;
@@ -98,18 +125,7 @@
   }
   .status { color: var(--muted); font-size: 0.9rem; margin: 10px 0; min-height: 1.2em; }
   .error { color: #c0392b; }
-  .hint { color: var(--muted); font-size: 0.82rem; margin-top: -6px; margin-bottom: 8px; }
-  .attachments { margin-top: 10px; font-size: 0.85rem; }
-  .attachments a { color: var(--accent-dark); }
-  #viewer-wrap { display: none; margin-top: 18px; }
-  #viewer-wrap.show { display: block; }
-  #pdf-frame {
-    width: 100%;
-    height: 80vh;
-    border: 1px solid var(--border);
-    border-radius: 10px;
-    background: white;
-  }
+  .alt-hint { color: var(--muted); font-size: 0.82rem; margin-top: -6px; margin-bottom: 8px; }
 </style>
 </head>
 <body>
@@ -126,13 +142,6 @@
 
   <div class="status" id="status"></div>
   <div id="results"></div>
-  <div id="viewer-wrap">
-    <div class="card" style="margin-bottom:8px;">
-      <div class="company-name" id="viewerTitle"></div>
-      <div class="attachments" id="viewerAttachments"></div>
-    </div>
-    <iframe id="pdf-frame"></iframe>
-  </div>
 </div>
 
 <script>
@@ -140,10 +149,6 @@ const form = document.getElementById('searchForm');
 const input = document.getElementById('symbolInput');
 const statusEl = document.getElementById('status');
 const resultsEl = document.getElementById('results');
-const viewerWrap = document.getElementById('viewer-wrap');
-const viewerTitle = document.getElementById('viewerTitle');
-const viewerAttachments = document.getElementById('viewerAttachments');
-const pdfFrame = document.getElementById('pdf-frame');
 const searchBtn = document.getElementById('searchBtn');
 
 form.addEventListener('submit', (e) => {
@@ -154,7 +159,6 @@ form.addEventListener('submit', (e) => {
 
 async function runSearch(q) {
   resultsEl.innerHTML = '';
-  viewerWrap.classList.remove('show');
   statusEl.textContent = `กำลังค้นหา "${q}" ...`;
   statusEl.classList.remove('error');
   searchBtn.disabled = true;
@@ -188,19 +192,52 @@ async function runSearch(q) {
 function renderBest(best) {
   const card = document.createElement('div');
   card.className = 'card';
-  const years = best.filings
-    .map((f, i) => `<a href="#" class="${i === 0 ? 'primary' : ''}" data-name="${encodeURIComponent(best.name)}" data-year="${f.year}">ปี ${f.year}</a>`)
+  const rows = best.filings
+    .map((f, i) => {
+      const reportUrl = `/api/report?name=${encodeURIComponent(best.name)}&year=${encodeURIComponent(f.year)}`;
+      return `
+        <div class="year-row">
+          <a class="year-link ${i === 0 ? 'primary' : ''}" href="${reportUrl}" target="_blank" rel="noopener">เปิดอ่าน 56-1 ปี ${f.year}</a>
+          <button type="button" class="attach-btn" data-name="${encodeURIComponent(best.name)}" data-year="${f.year}">เอกสารแนบ</button>
+          <div class="attach-box" hidden></div>
+        </div>`;
+    })
     .join('');
   card.innerHTML = `
     <div class="company-name">${best.name}</div>
     <div class="meta">พบรายงาน 56-1 ทั้งหมด ${best.filings.length} ปี · ยื่นล่าสุด ${best.filings[0].receiveDate}</div>
-    <div class="years">${years}</div>
+    <div class="hint">กด "เปิดอ่าน" จะเปิด PDF ในแท็บใหม่ด้วยตัวอ่านของเบราว์เซอร์เอง เลื่อน/ซูมได้ตามปกติ</div>
+    <div class="year-list">${rows}</div>
   `;
   resultsEl.appendChild(card);
-  card.querySelectorAll('a[data-year]').forEach((a) => {
-    a.addEventListener('click', (e) => {
-      e.preventDefault();
-      openReport(decodeURIComponent(a.dataset.name), a.dataset.year);
+
+  card.querySelectorAll('.attach-btn').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const box = btn.nextElementSibling;
+      if (!box.hidden) {
+        box.hidden = true;
+        return;
+      }
+      box.hidden = false;
+      box.textContent = 'กำลังโหลดรายการเอกสาร...';
+      const name = decodeURIComponent(btn.dataset.name);
+      const year = btn.dataset.year;
+      try {
+        const res = await fetch(`/api/report-list?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}`);
+        const data = await res.json();
+        if (res.ok && data.entries && data.entries.length) {
+          box.innerHTML = data.entries
+            .map(
+              (e) =>
+                `<a href="/api/report?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}&entry=${encodeURIComponent(e.entryName)}" target="_blank" rel="noopener">${e.entryName}</a>`
+            )
+            .join(' ');
+        } else {
+          box.textContent = 'ไม่พบเอกสารแนบเพิ่มเติม';
+        }
+      } catch (e) {
+        box.textContent = 'โหลดรายการเอกสารไม่สำเร็จ';
+      }
     });
   });
 }
@@ -216,7 +253,7 @@ function renderAlternates(alts) {
       </li>`
     )
     .join('');
-  card.innerHTML = `<div class="hint">ไม่ใช่บริษัทที่ต้องการ? เลือกจากรายชื่อใกล้เคียง:</div><ul class="alt-list">${items}</ul>`;
+  card.innerHTML = `<div class="alt-hint">ไม่ใช่บริษัทที่ต้องการ? เลือกจากรายชื่อใกล้เคียง:</div><ul class="alt-list">${items}</ul>`;
   resultsEl.appendChild(card);
   card.querySelectorAll('.pick-btn').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -226,36 +263,6 @@ function renderAlternates(alts) {
       renderBest(alt);
     });
   });
-}
-
-async function openReport(name, year) {
-  viewerWrap.classList.add('show');
-  viewerTitle.textContent = `${name} — 56-1 One Report ปี ${year}`;
-  viewerAttachments.textContent = 'กำลังโหลดเอกสาร...';
-  pdfFrame.removeAttribute('src');
-  viewerWrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
-
-  const mainUrl = `/api/report?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}`;
-  pdfFrame.src = mainUrl;
-
-  try {
-    const res = await fetch(`/api/report-list?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}`);
-    const data = await res.json();
-    if (res.ok && data.entries && data.entries.length > 1) {
-      viewerAttachments.innerHTML =
-        'เอกสารแนบทั้งหมด: ' +
-        data.entries
-          .map(
-            (e) =>
-              `<a href="/api/report?name=${encodeURIComponent(name)}&year=${encodeURIComponent(year)}&entry=${encodeURIComponent(e.entryName)}" target="_blank">${e.entryName}</a>`
-          )
-          .join(' · ');
-    } else {
-      viewerAttachments.textContent = '';
-    }
-  } catch (e) {
-    viewerAttachments.textContent = '';
-  }
 }
 </script>
 </body>
