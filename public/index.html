@@ -229,7 +229,9 @@ async function runSearch(q) {
     if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
 
     if (!data.best && !data.fund) {
-      statusEl.textContent = `ไม่พบข้อมูลบริษัทที่ตรงกับ "${q}"`;
+      statusEl.textContent = data.yahoo.length
+        ? `ไม่พบข้อมูลบริษัทที่ตรงกับ "${q}"`
+        : `ไม่พบข้อมูลบริษัทที่ตรงกับ "${q}" (หาชื่อบริษัทไม่เจอชั่วคราว ลองค้นหาอีกครั้ง)`;
       statusEl.classList.add('error');
       return;
     }

@@ -273,7 +273,7 @@ async function yahooCandidates(query) {
       const res = await fetchWithRetry(
         `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=0`,
         {},
-        1,
+        2,
       );
       const data = await res.json();
       for (const quote of data.quotes || []) {
@@ -282,7 +282,9 @@ async function yahooCandidates(query) {
         }
       }
     } catch (e) {
-      // ignore, best effort
+      // Best effort — but log it, since a Yahoo failure with no fallback
+      // means the search comes back empty with no indication why.
+      console.warn(`Yahoo Finance lookup failed for "${q}": ${e.message}`);
     }
   }
   return [...seen.values()];
