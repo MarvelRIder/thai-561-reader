@@ -149,7 +149,27 @@ async function fetchListPage(url, validate, label) {
   throw new Error(`SEC ${label} page kept returning the wrong language after retries`);
 }
 
+let indexLoadInFlight = null;
+
+// Guards against the classic cold-start pile-up: the server kicks off a
+// background refresh at startup, and if a request lands before that
+// finishes it would otherwise start its *own* full fetch+parse of both SEC
+// listing pages (multiple megabytes, a slow/flaky host) in parallel with
+// the one already running. Route every caller through the same promise
+// instead.
 async function loadIndex(force = false) {
+  if (!force && indexCache.rows.length && Date.now() - indexCache.fetchedAt < INDEX_TTL_MS) {
+    return indexCache;
+  }
+  if (indexLoadInFlight) return indexLoadInFlight;
+
+  indexLoadInFlight = loadIndexUncached(force).finally(() => {
+    indexLoadInFlight = null;
+  });
+  return indexLoadInFlight;
+}
+
+async function loadIndexUncached(force) {
   if (!force && indexCache.rows.length && Date.now() - indexCache.fetchedAt < INDEX_TTL_MS) {
     return indexCache;
   }
