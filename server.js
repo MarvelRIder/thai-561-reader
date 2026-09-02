@@ -339,6 +339,131 @@ function pickPrimaryPdf(entries, lang) {
     .sort((a, b) => score(b.entryName) - score(a.entryName) || b.size - a.size)[0];
 }
 
+// ---------- Infrastructure / Property Fund annual reports (MRAP) ----------
+//
+// Infrastructure funds and (older-style) property funds — e.g. DIF — are
+// organised as mutual funds ("กองทุนรวม"), not public companies, so they
+// never file a 56-1 One Report. Their annual reports instead live on the
+// SEC's separate "MRAP" (Mutual Fund Report and Prospectus) system, an
+// ASP.NET WebForms app that requires replaying its __VIEWSTATE/
+// __EVENTVALIDATION postback fields to search. Modern REITs (a Trust
+// structure, not a fund) are NOT covered by this — they aren't in MRAP
+// either, as far as we've found.
+
+const MRAP_URL = 'https://market.sec.or.th/public/mrap/MRAPDefault.aspx';
+const MRAP_VIEW_URL = 'https://market.sec.or.th/public/mrap/MRAPView.aspx';
+const MRAP_FILE_PREFIX = 'https://market.sec.or.th/public/mrap/MRAPFile.aspx?';
+
+function extractHiddenField(html, id) {
+  const re = new RegExp(`id="${id}"[^>]*value="([^"]*)"`);
+  const m = html.match(re);
+  return m ? m[1] : '';
+}
+
+async function mrapSearchCandidates(query) {
+  const res1 = await fetchWithRetry(MRAP_URL, {}, 1);
+  const html1 = await res1.text();
+  const cookies = typeof res1.headers.getSetCookie === 'function' ? res1.headers.getSetCookie() : [];
+  const cookieHeader = cookies.map((c) => c.split(';')[0]).join('; ');
+
+  const body = new URLSearchParams({
+    ctl00_ToolkitScriptManager1_HiddenField: extractHiddenField(html1, 'ctl00_ToolkitScriptManager1_HiddenField'),
+    __EVENTTARGET: '',
+    __EVENTARGUMENT: '',
+    __VIEWSTATE: extractHiddenField(html1, '__VIEWSTATE'),
+    __VIEWSTATEGENERATOR: extractHiddenField(html1, '__VIEWSTATEGENERATOR'),
+    __SCROLLPOSITIONX: '0',
+    __SCROLLPOSITIONY: '0',
+    __EVENTVALIDATION: extractHiddenField(html1, '__EVENTVALIDATION'),
+    'ctl00$contentMain$ddlFundType': '',
+    'ctl00$contentMain$txtSearchName': query,
+    'ctl00$contentMain$ddlCompany': '',
+    'ctl00$contentMain$ddlFundStatus': 'AC',
+    'ctl00$contentMain$cpe_ClientState': 'true',
+    'ctl00$contentMain$ddlInvestorType': '',
+    'ctl00$contentMain$ddlProjectType': '',
+    'ctl00$contentMain$ddlInvestmentPolicyPolicy': '',
+    'ctl00$contentMain$ddlSpecialFundType': '',
+    'ctl00$contentMain$ddlForeignInvestmentInvestType': '',
+    'ctl00$contentMain$ddlDividendInfoDividendPolicy': '',
+    ctl00_contentMain_gvwFund_ClientState: '',
+    'ctl00$contentMain$btnSearch.x': '10',
+    'ctl00$contentMain$btnSearch.y': '10',
+  });
+
+  const res2 = await fetchWithRetry(
+    MRAP_URL,
+    {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        Cookie: cookieHeader,
+        Referer: MRAP_URL,
+      },
+      body: body.toString(),
+    },
+    1,
+  );
+  const html2 = await res2.text();
+
+  const rowRe =
+    /<a id="[^"]*_lnkView" href="MRAPView\.aspx\?FTYPE=([A-Z])&amp;PID=(\d+)&amp;PYR=(\d+)"[^>]*>([^<]*)<\/a>[\s\S]*?<a id="[^"]*_lnkView2"[^>]*>([^<]*)<\/a>[\s\S]*?<td class="alignleft">([^<]*)<\/td>/g;
+
+  const candidates = [];
+  let m;
+  while ((m = rowRe.exec(html2))) {
+    candidates.push({
+      shortName: decodeEntities(m[4]).trim(),
+      fullName: decodeEntities(m[5]).trim(),
+      status: decodeEntities(m[6]).trim(),
+      ftype: m[1],
+      pid: m[2],
+      pyr: m[3],
+    });
+  }
+  return candidates;
+}
+
+async function mrapAnnualReports(ftype, pid, pyr) {
+  const url = `${MRAP_VIEW_URL}?FTYPE=${ftype}&PID=${pid}&PYR=${pyr}`;
+  const res = await fetchWithRetry(url, { headers: { Referer: MRAP_URL } });
+  const html = await res.text();
+
+  const linkRe = /<a[^>]*href="(MRAPFile\.aspx\?[^"]*REPORTID=46[^"]*)"[^>]*>/g;
+  const seen = new Map();
+  let m;
+  while ((m = linkRe.exec(html))) {
+    const href = decodeEntities(m[1]);
+    const periodMatch = href.match(/PERIOD=(\d{4}-\d{2}-\d{2})/);
+    if (!periodMatch) continue;
+    const period = periodMatch[1];
+    const year = period.slice(0, 4);
+    // some periods appear more than once (e.g. amended filings); keep one per year
+    if (!seen.has(year)) {
+      seen.set(year, { year, period, url: 'https://market.sec.or.th/public/mrap/' + href });
+    }
+  }
+  return [...seen.values()].sort((a, b) => b.year.localeCompare(a.year));
+}
+
+async function findFund(query) {
+  const q = query.trim().toUpperCase();
+  if (!q) return null;
+  let candidates;
+  try {
+    candidates = await mrapSearchCandidates(q);
+  } catch (e) {
+    console.warn('MRAP fund search failed:', e.message);
+    return null;
+  }
+  const match = candidates.find((c) => c.shortName.toUpperCase() === q) || candidates.find((c) => c.shortName.toUpperCase().startsWith(q));
+  if (!match) return null;
+
+  const filings = await mrapAnnualReports(match.ftype, match.pid, match.pyr);
+  if (!filings.length) return null;
+  return { name: match.fullName, shortName: match.shortName, filings };
+}
+
 // ---------- routes ----------
 
 app.use(express.static(path.join(__dirname, 'public')));
@@ -348,7 +473,7 @@ app.get('/api/search', async (req, res) => {
     const q = (req.query.q || '').toString().trim();
     if (!q) return res.status(400).json({ error: 'missing q' });
 
-    const [idx, yQuotes] = await Promise.all([loadIndex(), yahooCandidates(q)]);
+    const [idx, yQuotes, fund] = await Promise.all([loadIndex(), yahooCandidates(q), findFund(q)]);
 
     const targets = yQuotes.map((c) => c.longname);
     if (!targets.length) targets.push(q);
@@ -369,6 +494,7 @@ app.get('/api/search', async (req, res) => {
       yahoo: yQuotes.map((c) => ({ symbol: c.symbol, longname: c.longname })),
       best: scored[0] || null,
       alternates: scored.slice(1, 6),
+      fund: fund || null,
       indexAgeMs: Date.now() - idx.fetchedAt,
     });
   } catch (e) {
@@ -438,6 +564,23 @@ app.get('/api/report', async (req, res) => {
     res.send(pdfBuf);
   } catch (e) {
     res.status(502).json({ error: 'เปิดรายงานไม่สำเร็จ: ' + e.message });
+  }
+});
+
+app.get('/api/fund-report', async (req, res) => {
+  try {
+    const { url } = req.query;
+    if (!url || !url.toString().startsWith(MRAP_FILE_PREFIX)) {
+      return res.status(400).json({ error: 'invalid url' });
+    }
+    const upstream = await fetchWithRetry(url.toString(), { headers: { Referer: MRAP_VIEW_URL } });
+    const buf = Buffer.from(await upstream.arrayBuffer());
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', 'inline'); // upstream sends "attachment" — we want it viewable in-tab
+    res.setHeader('Cache-Control', 'private, max-age=1800');
+    res.send(buf);
+  } catch (e) {
+    res.status(502).json({ error: 'เปิดรายงานกองทุนไม่สำเร็จ: ' + e.message });
   }
 });
 

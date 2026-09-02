@@ -228,7 +228,7 @@ async function runSearch(q) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
 
-    if (!data.best) {
+    if (!data.best && !data.fund) {
       statusEl.textContent = `ไม่พบข้อมูลบริษัทที่ตรงกับ "${q}"`;
       statusEl.classList.add('error');
       return;
@@ -238,8 +238,17 @@ async function runSearch(q) {
       ? `จับคู่กับ: ${data.yahoo.map(y => y.symbol.replace('.BK','') + ' (' + y.longname + ')').join(', ')}`
       : '';
 
-    renderBest(data.best);
-    if (data.alternates && data.alternates.length) {
+    if (data.fund) {
+      renderFund(data.fund);
+    }
+    // A fund match (exact short-code lookup) is authoritative; only show the
+    // fuzzy 56-1 company match alongside it when it's a confident hit too —
+    // otherwise it's usually a coincidental low-score false positive (e.g.
+    // "DIF" loosely matching "SAMART DIGITAL").
+    if (data.best && (!data.fund || data.best.score >= 0.5)) {
+      renderBest(data.best);
+    }
+    if (!data.fund && data.alternates && data.alternates.length) {
       renderAlternates(data.alternates);
     }
   } catch (err) {
@@ -248,6 +257,26 @@ async function runSearch(q) {
   } finally {
     searchBtn.disabled = false;
   }
+}
+
+function renderFund(fund) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  const rows = fund.filings
+    .map(
+      (f, i) => `
+        <div class="year-row">
+          <a class="year-link ${i === 0 ? 'primary' : ''}" href="/api/fund-report?url=${encodeURIComponent(f.url)}" target="_blank" rel="noopener">เปิดอ่านรายงานประจำปี ${f.year}</a>
+        </div>`
+    )
+    .join('');
+  card.innerHTML = `
+    <div class="company-name">${fund.name} (${fund.shortName})</div>
+    <div class="meta">กองทุนรวมโครงสร้างพื้นฐาน/อสังหาริมทรัพย์ — ไม่ยื่นแบบ 56-1 แต่มีรายงานประจำปีของกองทุนแทน · พบทั้งหมด ${fund.filings.length} ปี</div>
+    <div class="hint">กด "เปิดอ่าน" จะเปิด PDF ในแท็บใหม่ด้วยตัวอ่านของเบราว์เซอร์เอง</div>
+    <div class="year-list">${rows}</div>
+  `;
+  resultsEl.appendChild(card);
 }
 
 function renderBest(best) {
