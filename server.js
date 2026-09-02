@@ -456,7 +456,10 @@ async function findFund(query) {
     console.warn('MRAP fund search failed:', e.message);
     return null;
   }
-  const match = candidates.find((c) => c.shortName.toUpperCase() === q) || candidates.find((c) => c.shortName.toUpperCase().startsWith(q));
+  // Exact short-code match only — a prefix match (e.g. "CPN" loosely
+  // matching the unrelated fund "CPNCG") would hijack real stock searches
+  // that happen to be a prefix of some fund's short code.
+  const match = candidates.find((c) => c.shortName.toUpperCase() === q);
   if (!match) return null;
 
   const filings = await mrapAnnualReports(match.ftype, match.pid, match.pyr);
