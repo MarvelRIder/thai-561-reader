@@ -72,11 +72,11 @@ function tokenize(name) {
 function scoreMatch(a, b) {
   const ta = new Set(tokenize(a));
   const tb = new Set(tokenize(b));
-  if (!ta.size || !tb.size) return 0;
+  if (!ta.size || !tb.size) return { score: 0, overlap: 0 };
   let inter = 0;
   for (const t of ta) if (tb.has(t)) inter++;
   const union = new Set([...ta, ...tb]).size;
-  return inter / union;
+  return { score: inter / union, overlap: inter };
 }
 
 // ---------- SEC 56-1 filing index ----------
@@ -265,29 +265,35 @@ async function loadIndexUncached(force) {
 
 // ---------- symbol -> company name resolution via Yahoo Finance search ----------
 
-async function yahooCandidates(query) {
-  const tries = [`${query}.BK`, query];
-  const seen = new Map();
-  for (const q of tries) {
-    try {
-      const res = await fetchWithRetry(
-        `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=0`,
-        {},
-        2,
-      );
-      const data = await res.json();
-      for (const quote of data.quotes || []) {
-        if (quote.exchange === 'SET' && quote.longname) {
-          seen.set(quote.symbol, quote);
-        }
-      }
-    } catch (e) {
-      // Best effort — but log it, since a Yahoo failure with no fallback
-      // means the search comes back empty with no indication why.
-      console.warn(`Yahoo Finance lookup failed for "${q}": ${e.message}`);
-    }
+async function yahooRawSearch(q) {
+  try {
+    const res = await fetchWithRetry(
+      `https://query1.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(q)}&quotesCount=6&newsCount=0`,
+      {},
+      2,
+    );
+    const data = await res.json();
+    return (data.quotes || []).filter((quote) => quote.exchange === 'SET' && quote.longname);
+  } catch (e) {
+    // Best effort — but log it, since a Yahoo failure with no fallback
+    // means the search comes back empty with no indication why.
+    console.warn(`Yahoo Finance lookup failed for "${q}": ${e.message}`);
+    return [];
   }
-  return [...seen.values()];
+}
+
+// Search "${query}.BK" first — an exact SET ticker lookup. Only fall back to
+// a bare-word search if that finds nothing: bare-word search matches loosely
+// against any part of a company's name, so for a query like "thai" it pulls
+// in a pile of unrelated companies (anything with "Thailand" in the name)
+// alongside the one actual ticker match, and diluting the matching targets
+// with that noise can make an unrelated company win over "no match at all"
+// — which matters when the real ticker (e.g. THAI, delisted) isn't in our
+// filing index at all and the honest answer is "not found".
+async function yahooCandidates(query) {
+  const exact = await yahooRawSearch(`${query}.BK`);
+  if (exact.length) return exact;
+  return await yahooRawSearch(query);
 }
 
 // ---------- zip fetching / extraction ----------
@@ -485,26 +491,46 @@ app.get('/api/search', async (req, res) => {
 
     const scored = [];
     for (const [name, filings] of idx.byName) {
-      let best = 0;
-      for (const t of targets) best = Math.max(best, scoreMatch(name, t));
-      if (name.toUpperCase().includes(q.toUpperCase()) && q.length >= 3) {
-        best = Math.max(best, 0.35);
+      let score = 0;
+      let overlap = 0;
+      for (const t of targets) {
+        const m = scoreMatch(name, t);
+        if (m.score > score) {
+          score = m.score;
+          overlap = m.overlap;
+        }
       }
-      if (best > 0.15) scored.push({ name, score: best, filings });
+      // A raw substring hit (ticker text literally inside the company name)
+      // is a weak signal on its own — surface it as a low-confidence
+      // alternate, but don't let it count as a confident single-token match.
+      if (score < 0.35 && name.toUpperCase().includes(q.toUpperCase()) && q.length >= 3) {
+        score = 0.35;
+      }
+      if (score > 0.15) scored.push({ name, score, overlap, filings });
     }
     scored.sort((a, b) => b.score - a.score);
 
+    // Only trust the top hit as a definite match if it shares 2+ meaningful
+    // words, or matches on every word there is (score 1 covers a legitimate
+    // single-word company name like "TRUE"). Otherwise a single coincidental
+    // shared word — e.g. "thai" loosely matching "THAI GROUP HOLDINGS" when
+    // the actual ticker (Thai Airways, delisted) isn't in our data at all —
+    // would get presented as a confident answer instead of "not found".
+    const topConfident = scored.length > 0 && (scored[0].score === 1 || scored[0].overlap >= 2);
+    const best = topConfident ? scored[0] : null;
+    const alternates = (topConfident ? scored.slice(1) : scored).slice(0, 6);
+
     // The fund lookup (MRAP) is a slow multi-request round-trip to a
-    // government ASP.NET app — only pay for it when the normal 56-1 match
-    // isn't already confident, so a plain company search (the common case)
-    // stays fast.
-    const fund = !scored.length || scored[0].score < 0.6 ? await findFund(q) : null;
+    // government ASP.NET app — only pay for it when there's no confident
+    // 56-1 company match, so a plain company search (the common case) stays
+    // fast.
+    const fund = !best ? await findFund(q) : null;
 
     res.json({
       query: q,
       yahoo: yQuotes.map((c) => ({ symbol: c.symbol, longname: c.longname })),
-      best: scored[0] || null,
-      alternates: scored.slice(1, 6),
+      best,
+      alternates,
       fund: fund || null,
       indexAgeMs: Date.now() - idx.fetchedAt,
     });

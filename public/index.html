@@ -228,7 +228,9 @@ async function runSearch(q) {
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'เกิดข้อผิดพลาด');
 
-    if (!data.best && !data.fund) {
+    const hasAlternates = data.alternates && data.alternates.length > 0;
+
+    if (!data.best && !data.fund && !hasAlternates) {
       statusEl.textContent = data.yahoo.length
         ? `ไม่พบข้อมูลบริษัทที่ตรงกับ "${q}"`
         : `ไม่พบข้อมูลบริษัทที่ตรงกับ "${q}" (หาชื่อบริษัทไม่เจอชั่วคราว ลองค้นหาอีกครั้ง)`;
@@ -236,21 +238,23 @@ async function runSearch(q) {
       return;
     }
 
-    statusEl.textContent = data.yahoo.length
-      ? `จับคู่กับ: ${data.yahoo.map(y => y.symbol.replace('.BK','') + ' (' + y.longname + ')').join(', ')}`
-      : '';
+    if (data.best || data.fund) {
+      statusEl.textContent = data.yahoo.length
+        ? `จับคู่กับ: ${data.yahoo.map(y => y.symbol.replace('.BK','') + ' (' + y.longname + ')').join(', ')}`
+        : '';
+    } else {
+      // No confident match, but there are lower-confidence guesses — let the
+      // user pick one instead of a flat "not found".
+      statusEl.textContent = `ไม่พบบริษัทที่ตรงกับ "${q}" แบบชัดเจน แต่นี่คือรายชื่อใกล้เคียงที่พอเป็นไปได้:`;
+    }
 
     if (data.fund) {
       renderFund(data.fund);
     }
-    // A fund match (exact short-code lookup) is authoritative; only show the
-    // fuzzy 56-1 company match alongside it when it's a confident hit too —
-    // otherwise it's usually a coincidental low-score false positive (e.g.
-    // "DIF" loosely matching "SAMART DIGITAL").
-    if (data.best && (!data.fund || data.best.score >= 0.5)) {
+    if (data.best) {
       renderBest(data.best);
     }
-    if (!data.fund && data.alternates && data.alternates.length) {
+    if (hasAlternates) {
       renderAlternates(data.alternates);
     }
   } catch (err) {
