@@ -478,7 +478,7 @@ app.get('/api/search', async (req, res) => {
     const q = (req.query.q || '').toString().trim();
     if (!q) return res.status(400).json({ error: 'missing q' });
 
-    const [idx, yQuotes, fund] = await Promise.all([loadIndex(), yahooCandidates(q), findFund(q)]);
+    const [idx, yQuotes] = await Promise.all([loadIndex(), yahooCandidates(q)]);
 
     const targets = yQuotes.map((c) => c.longname);
     if (!targets.length) targets.push(q);
@@ -493,6 +493,12 @@ app.get('/api/search', async (req, res) => {
       if (best > 0.15) scored.push({ name, score: best, filings });
     }
     scored.sort((a, b) => b.score - a.score);
+
+    // The fund lookup (MRAP) is a slow multi-request round-trip to a
+    // government ASP.NET app — only pay for it when the normal 56-1 match
+    // isn't already confident, so a plain company search (the common case)
+    // stays fast.
+    const fund = !scored.length || scored[0].score < 0.6 ? await findFund(q) : null;
 
     res.json({
       query: q,
